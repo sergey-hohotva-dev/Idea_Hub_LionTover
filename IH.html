@@ -1,0 +1,1518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Chess — Player vs Adaptive Bot</title>
+<style>
+body{margin:0;background:#0b0b12;color:#eee;font-family:monospace;display:flex;height:100vh}
+#left,#right{width:300px;padding:16px;overflow-y:auto;box-sizing:border-box}
+#left{border-right:1px solid #222}
+#right{width:560px;border-left:1px solid #222}
+#right canvas{width:100%;display:block}
+#tip{position:fixed;display:none;pointer-events:none;z-index:20;background:#14161d;border:1px solid #333845;border-radius:4px;padding:6px 9px;font-size:11px;line-height:1.5;max-width:300px;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+.lg{cursor:pointer;margin-right:10px;user-select:none;white-space:nowrap}
+.lg.off{opacity:.35;text-decoration:line-through}
+#right select{margin-top:6px}
+#left td,#left th{font-size:10px}
+#bmTable td:first-child{white-space:nowrap}
+#left select{margin-top:4px}
+#right td,#right th{font-size:10px}
+#center{flex:1;display:flex;align-items:center;justify-content:center}
+canvas{background:#060608;border:1px solid #333}
+button,select{width:100%;margin-top:10px;padding:9px;background:#222;color:#fff;border:1px solid #444;cursor:pointer;font-family:inherit}
+button:hover{background:#333}button:disabled{opacity:.5;cursor:wait}
+button.on{background:#1e5a3a;border-color:#2ecc71}
+.small{color:#999;font-size:12px}
+.info-line{margin:7px 0;font-size:13px}
+h3{margin:14px 0 6px}h3:first-child{margin-top:0}
+input[type=range]{width:100%}
+.row{display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px}
+.row span{width:78px}.row b{width:34px;text-align:right}
+.bar{flex:1;height:8px;background:#1b1b24}
+.bar i{display:block;height:100%;width:0;background:#5b7fa6}
+.bar.red i{background:#a86a6a}
+table{width:100%;border-collapse:collapse;font-size:11px;margin-top:10px}
+td,th{border-bottom:1px solid #222;padding:4px 2px;text-align:right}
+td:first-child,th:first-child{text-align:left}
+.sw{display:inline-block;width:8px;height:8px;margin-right:4px}
+</style>
+</head>
+<body>
+
+<div id="left">
+    <h3>Match Statistics</h3>
+    <div class="info-line">Game: <b id="matchNum">1</b></div>
+    <div class="info-line">Player wins (Blue): <b id="playerGoals">0</b></div>
+    <div class="info-line">Bot wins (Red): <b id="algoGoals">0</b></div>
+    <div class="small">Autoplay speed: <b id="accValue">1</b> half-moves/frame</div>
+    <input type="range" id="accSlider" min="1" max="10" value="1" step="1">
+    <div class="info-line">FPS: <b id="speed">0</b></div>
+    <div class="info-line small">You play Blue (bottom): select a piece, then a destination square.</div>
+
+    <h3>Bot Configuration</h3>
+    <div class="small">Bot style</div>
+    <select id="styleSel"></select>
+    <div class="small">Target probability for each candidate line = style baseline + level n. ATTACK has a 10% baseline, so its total is 10% + n; this applies to every candidate line evaluated by that style.</div>
+    <select id="lvlSel"></select>
+    <div class="small" style="margin-top:6px">Autoplay opponent</div>
+    <select id="oppSel"></select>
+
+    <h3>Bot Diagnostics</h3>
+    <div class="info-line">Target misread probability: <b id="misNow">-</b> <span class="small">(observed: <span id="misAct">-</span>)</span></div>
+    <div class="info-line">Active skill: <b id="botMode">-</b> (<span id="botMs">0</span> ms)</div>
+    <div class="row"><span>Perception</span><div class="bar"><i id="levelBar"></i></div><b id="botLevel">50%</b></div>
+    <div class="info-line">Engine-relative move accuracy: <b id="qAcc">-</b></div>
+    <div class="small">Accuracy is an estimate, not a skill rating. The reference checks one opponent reply plus tactical continuations; use Blunder Rate and Best-Move Match alongside it.</div>
+    <div class="info-line">ACPL (centipawns/move): <b id="qCpl">-</b></div>
+    <div class="info-line">Blunders (≥300 cp): <b id="qBl">-</b></div>
+    <div class="info-line">Best-move match: <b id="qTop">-</b> <span class="small">(moves evaluated: <span id="qN">0</span>)</span></div>
+    <div class="small" style="margin-top:8px">Skill Usage</div>
+    <div id="usage"></div>
+    <div class="small" style="margin-top:8px">Flank where the bot loses material (risk)</div>
+    <div id="lanes"></div>
+
+    <button id="autoPlay">Autoplay: Scripted Player vs Bot (Off)</button>
+    <button id="resetMatch">Reset Match</button>
+    <button id="forgetBot">Reset Bot Learning</button>
+
+    <h3>Matches: Bot vs Opponent Archetype</h3>
+    <div class="small">Each row identifies a bot style and level; each column identifies its opponent archetype. W/D/L = bot wins / draws / losses.</div>
+    <table id="hist"></table>
+</div>
+
+<div id="center"><canvas id="game" width="600" height="800"></canvas></div>
+
+<div id="right">
+    <h3>Benchmark</h3>
+    <div class="small">Bots play Black against scripted opponent archetypes. Each run starts fresh; learning accumulates across games within a series. Repeated series run in parallel workers.</div>
+    <select id="bmMode">
+        <option value="ablation">Ablation study: 7 agents (noise decreases with experience)</option>
+        <option value="ladder">Level ladder: selected style at all 9 levels</option>
+        <option value="arche">Style archetypes: all styles at selected level</option>
+        <option value="grid">Full grid: all 6 styles × all 9 levels (54 configurations)</option>
+    </select>
+    <select id="bmStyle"></select>
+    <select id="bmLevel"></select>
+    <select id="bmPreset">
+        <option value="quick">Quick: 4 opponents, 4 repeats, 60 games</option>
+        <option value="standard" selected>Standard: 10 opponents, 6 repeats, 80 games</option>
+        <option value="deep">Deep: 10 opponents, 10 repeats, 100 games</option>
+    </select>
+    <div class="info-line small" id="bmHint"></div>
+    <button id="bmRun">Run Benchmark</button>
+    <div class="bar" style="width:100%;margin-top:8px"><i id="bmProg"></i></div>
+    <div class="info-line small" id="bmStatus">Not run yet</div>
+
+    <h3>Metric</h3>
+    <select id="bmMetric">
+        <option value="score">Match Score (win 1, draw 0.5)</option>
+        <option value="acc">Move Accuracy, %</option>
+        <option value="cpl">ACPL: Average Centipawn Loss</option>
+        <option value="blun">Blunder Rate: moves losing ≥300 cp</option>
+        <option value="top1">Best-Move Match, %</option>
+        <option value="mis">Observed Line-Misinterpretation Rate, %</option>
+    </select>
+    <div class="small" style="margin-top:6px">Move quality is measured against an internal reference search. 100 cp = one pawn; loss per move is capped at 1,000 cp. Move Accuracy uses a win-probability-based formula. A blunder is a loss of at least 300 cp. The benchmark evaluates every third bot move; live play evaluates every move.</div>
+
+    <h3>Results Matrix: Bot Configuration × Opponent</h3>
+    <div class="small">Rows are bot configurations (style and level); columns are opponent archetypes. Hover over a cell for details.</div>
+    <table id="bmTable"></table>
+
+    <h3>Learning Curve</h3>
+    <select id="bmCurveOpp"></select>
+    <canvas id="bmChart" class="hv" width="520" height="260"></canvas>
+    <div class="small" id="bmLegend" style="margin-top:6px"></div>
+
+    <h3>Effect of Adaptation</h3>
+    <div class="small">Point = difference between agents; line = 95% confidence interval. If the interval crosses zero, the effect is not clearly distinguishable from noise.</div>
+    <canvas id="bmForest" class="hv" width="520" height="240"></canvas>
+    <div class="small" id="bmNote" style="margin-top:8px"></div>
+
+    <h3>Runtime Performance</h3>
+    <table id="bmPerf"></table>
+</div>
+
+<div id="tip"></div>
+
+<script>
+// BLOCK 1: CONFIG & CONTROLS
+let TIME_ACCELERATION = 1;
+const BOARD = { X: 44, Y: 144, SQ: 64 };
+const BOT = -1;   // bot plays black (Red), human plays white (Blue)
+
+// BLOCK 2: CHESS RULES + BOT (SKILL LIBRARY + LEARNING BRAIN)
+// Chess rules. Self-contained class, gets passed into Worker along with BotBrain.
+// Board: 64 squares, row 0 = 8th rank. Pieces: P1 N2 B3 R4 Q5 K6. White +, Black -.
+// Simplifications: queen-only promotion, no threefold repetition.
+class Chess {
+    static VAL = [0, 1, 3, 3, 5, 9, 0];
+    static KO = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+    static NO = [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]];
+    static BD = [[-1,-1],[-1,1],[1,-1],[1,1]];
+    static RD = [[-1,0],[1,0],[0,-1],[0,1]];
+
+    static start() {
+        const b = new Array(64).fill(0), back = [4, 2, 3, 5, 6, 3, 2, 4];
+        for (let c = 0; c < 8; c++) { b[c] = -back[c]; b[8 + c] = -1; b[48 + c] = 1; b[56 + c] = back[c]; }
+        return { b, t: 1, c: [1, 1, 1, 1], ep: -1, hm: 0 };
+    }
+    static lane(sq) { const c = sq & 7; return c < 3 ? 0 : (c < 5 ? 1 : 2); }
+    static kingSq(b, side) { return b.indexOf(6 * side); }
+
+    static attacked(b, sq, by) {
+        const r = sq >> 3, c = sq & 7, pr = r + by;
+        if (pr >= 0 && pr < 8) for (const dc of [-1, 1]) {
+            const cc = c + dc;
+            if (cc >= 0 && cc < 8 && b[pr * 8 + cc] === by) return true;
+        }
+        for (const [dr, dc] of Chess.NO) {
+            const rr = r + dr, cc = c + dc;
+            if (rr >= 0 && rr < 8 && cc >= 0 && cc < 8 && b[rr * 8 + cc] === 2 * by) return true;
+        }
+        for (const [dr, dc] of Chess.KO) {
+            const rr = r + dr, cc = c + dc;
+            if (rr >= 0 && rr < 8 && cc >= 0 && cc < 8 && b[rr * 8 + cc] === 6 * by) return true;
+        }
+        for (let d = 0; d < 8; d++) {
+            const [dr, dc] = Chess.KO[d], diag = dr !== 0 && dc !== 0;
+            let rr = r + dr, cc = c + dc;
+            while (rr >= 0 && rr < 8 && cc >= 0 && cc < 8) {
+                const p = b[rr * 8 + cc];
+                if (p !== 0) {
+                    if (p === 5 * by || p === (diag ? 3 : 4) * by) return true;
+                    break;
+                }
+                rr += dr; cc += dc;
+            }
+        }
+        return false;
+    }
+    static inCheck(pos, side) {
+        const k = Chess.kingSq(pos.b, side);
+        return k >= 0 && Chess.attacked(pos.b, k, -side);
+    }
+
+    // caps = captures only (fast, no pin checks: for eval)
+    static pseudo(pos, caps) {
+        const { b, t, c, ep } = pos, out = [];
+        const push = (f, to, e = 0, p = 0) => out.push({ f, t: to, p, e });
+        for (let s = 0; s < 64; s++) {
+            const piece = b[s];
+            if (piece * t <= 0) continue;
+            const k = piece * t, r = s >> 3, col = s & 7;
+            if (k === 1) {
+                const dir = -t, r1 = r + dir, last = t === 1 ? 0 : 7;
+                if (!caps && b[r1 * 8 + col] === 0) {
+                    push(s, r1 * 8 + col, 0, r1 === last ? 5 : 0);
+                    const r2 = r + 2 * dir;
+                    if (r === (t === 1 ? 6 : 1) && b[r2 * 8 + col] === 0) push(s, r2 * 8 + col);
+                }
+                for (const dc of [-1, 1]) {
+                    const cc = col + dc;
+                    if (cc < 0 || cc > 7) continue;
+                    const to = r1 * 8 + cc;
+                    if (b[to] * t < 0) push(s, to, 0, r1 === last ? 5 : 0);
+                    else if (to === ep) push(s, to, 1);
+                }
+            } else if (k === 2 || k === 6) {
+                for (const [dr, dc] of (k === 2 ? Chess.NO : Chess.KO)) {
+                    const rr = r + dr, cc = col + dc;
+                    if (rr < 0 || rr > 7 || cc < 0 || cc > 7) continue;
+                    const to = rr * 8 + cc;
+                    if (b[to] * t < 0 || (!caps && b[to] === 0)) push(s, to);
+                }
+                if (k === 6 && !caps) {
+                    const home = t === 1 ? 60 : 4, base = t === 1 ? 56 : 0, ci = t === 1 ? 0 : 2;
+                    if (s === home && !Chess.attacked(b, s, -t)) {
+                        if (c[ci] && b[base + 7] === 4 * t && !b[home + 1] && !b[home + 2] &&
+                            !Chess.attacked(b, home + 1, -t) && !Chess.attacked(b, home + 2, -t)) push(s, home + 2, 2);
+                        if (c[ci + 1] && b[base] === 4 * t && !b[home - 1] && !b[home - 2] && !b[home - 3] &&
+                            !Chess.attacked(b, home - 1, -t) && !Chess.attacked(b, home - 2, -t)) push(s, home - 2, 2);
+                    }
+                }
+            } else {
+                const dirs = k === 3 ? Chess.BD : (k === 4 ? Chess.RD : Chess.KO);
+                for (const [dr, dc] of dirs) {
+                    let rr = r + dr, cc = col + dc;
+                    while (rr >= 0 && rr < 8 && cc >= 0 && cc < 8) {
+                        const to = rr * 8 + cc;
+                        if (b[to] === 0) { if (!caps) push(s, to); }
+                        else { if (b[to] * t < 0) push(s, to); break; }
+                        rr += dr; cc += dc;
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    static make(pos, m) {
+        const b = pos.b.slice(), t = pos.t, piece = b[m.f], k = Math.abs(piece);
+        const cap = b[m.t] !== 0 || m.e === 1;
+        b[m.t] = piece; b[m.f] = 0;
+        if (m.e === 1) b[(m.f >> 3) * 8 + (m.t & 7)] = 0;
+        if (m.e === 2) {
+            const rk = m.t > m.f ? [m.f + 3, m.f + 1] : [m.f - 4, m.f - 1];
+            b[rk[1]] = b[rk[0]]; b[rk[0]] = 0;
+        }
+        if (m.p) b[m.t] = 5 * t;
+        const c = pos.c.slice();
+        if (k === 6) { if (t === 1) c[0] = c[1] = 0; else c[2] = c[3] = 0; }
+        for (const sq of [m.f, m.t]) {
+            if (sq === 63) c[0] = 0; else if (sq === 56) c[1] = 0;
+            else if (sq === 7) c[2] = 0; else if (sq === 0) c[3] = 0;
+        }
+        const ep = (k === 1 && Math.abs(m.t - m.f) === 16) ? (m.f + m.t) / 2 : -1;
+        return { b, t: -t, c, ep, hm: (cap || k === 1) ? 0 : pos.hm + 1 };
+    }
+
+    static moves(pos) {
+        const me = pos.t;
+        return Chess.pseudo(pos, false).filter(m => !Chess.inCheck(Chess.make(pos, m), me));
+    }
+
+    static balance(b, side) {
+        let s = 0;
+        for (const p of b) if (p) s += (p * side > 0 ? 1 : -1) * Chess.VAL[Math.abs(p)];
+        return s;
+    }
+    static captureValue(pos, m) {
+        let g = pos.b[m.t] ? Chess.VAL[Math.abs(pos.b[m.t])] : (m.e === 1 ? 1 : 0);
+        if (m.p) g += 8;
+        return g;
+    }
+    
+    // Max losses for victim side if opponent (whose turn it is in pos) makes the best capture
+    static maxLoss(pos, victim) {
+        const b = pos.b; let best = 0;
+        for (const m of Chess.pseudo(pos, true)) {
+            const att = Math.abs(b[m.f]), def = Chess.attacked(b, m.t, victim);
+            if (att === 6 && def) continue;
+            const loss = Chess.captureValue(pos, m) - (def ? Chess.VAL[att] : 0);
+            if (loss > best) best = loss;
+        }
+        return best;
+    }
+    
+    // ---- Reference move quality eval (centipawns): own move + capture follow-ups ----
+    static CV = [0, 100, 320, 330, 500, 900, 0];
+
+    // Static eval from side-to-move perspective (material + center + pawn advance)
+    static evalPos(pos) {
+        const b = pos.b; let s = 0;
+        for (let i = 0; i < 64; i++) {
+            const p = b[i];
+            if (!p) continue;
+            const a = Math.abs(p), r = i >> 3, c = i & 7, w = p > 0;
+            let v = Chess.CV[a];
+            if (a === 1) v += (w ? 6 - r : r - 1) * 6 + (c >= 2 && c <= 5 ? 4 : 0);
+            else if (a >= 2 && a <= 5) v += (7 - Math.abs(3.5 - c) - Math.abs(3.5 - r)) * (a === 2 ? 6 : a === 3 ? 4 : 2);
+            s += w ? v : -v;
+        }
+        return pos.t === 1 ? s : -s;
+    }
+    static order(ms, b) {
+        return ms.sort((x, y) => (Math.abs(b[y.t]) * 10 - Math.abs(b[y.f])) - (Math.abs(b[x.t]) * 10 - Math.abs(b[x.f])));
+    }
+    static qsearch(pos, alpha, beta, d) {
+        if (Chess.kingSq(pos.b, pos.t) < 0) return -30000;     // king captured = mate
+        const stand = Chess.evalPos(pos);
+        if (d === 0 || stand >= beta) return stand;
+        if (stand > alpha) alpha = stand;
+        for (const m of Chess.order(Chess.pseudo(pos, true), pos.b)) {
+            const sc = -Chess.qsearch(Chess.make(pos, m), -beta, -alpha, d - 1);
+            if (sc >= beta) return sc;
+            if (sc > alpha) alpha = sc;
+        }
+        return alpha;
+    }
+    static search(pos, depth, alpha, beta) {
+        if (Chess.kingSq(pos.b, pos.t) < 0) return -30000;
+        if (depth === 0) return Chess.qsearch(pos, alpha, beta, 3);
+        let best = -Infinity;
+        for (const m of Chess.order(Chess.pseudo(pos, false), pos.b)) {
+            const sc = -Chess.search(Chess.make(pos, m), depth - 1, -beta, -alpha);
+            if (sc > best) best = sc;
+            if (best > alpha) alpha = best;
+            if (alpha >= beta) break;
+        }
+        return best === -Infinity ? 0 : best;
+    }
+    static winPct(cp) { return 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * cp)) - 1); }
+
+    // Move quality vs reference best move: cpl = loss in cp, acc = 0..100 (Lichess win prob formula)
+    static quality(pos, played) {   
+        const legal = Chess.order(Chess.moves(pos), pos.b);
+        let best = -Infinity, bestM = null, alpha = -Infinity;
+        for (const m of legal) {
+            const sc = -Chess.search(Chess.make(pos, m), 1, -Infinity, -alpha);
+            if (sc > best) { best = sc; bestM = m; }
+            if (best > alpha) alpha = best;
+        }
+        const same = bestM && played.f === bestM.f && played.t === bestM.t;
+        const ps = same ? best : -Chess.search(Chess.make(pos, played), 1, -Infinity, Infinity);
+        const cl = v => Math.max(-1000, Math.min(1000, v)), b = cl(best), p = cl(ps);
+        const drop = Math.max(0, Chess.winPct(b) - Chess.winPct(p));
+        return {
+            cpl: Math.max(0, b - p),
+            acc: Math.max(0, Math.min(100, 103.1668 * Math.exp(-0.04354 * drop) - 3.1669)),
+            top1: ps >= best ? 1 : 0,
+            blun: Math.max(0, b - p) >= 300 ? 1 : 0      // blunder = loss of 3+ pawns
+        };
+    }
+
+    static drawish(pos) {
+        if (pos.hm >= 100) return true;
+        let n = 0, minor = 0;
+        for (const p of pos.b) {
+            const a = Math.abs(p);
+            if (a && a !== 6) { n++; if (a === 2 || a === 3) minor++; }
+        }
+        return n === 0 || (n === 1 && minor === 1);
+    }
+}
+
+// Brain: skill library ("puzzle pieces") + Q-learning, starts with "ideal bot".
+// opt: prior (start with ideal choice), learn (update Q), grow (accuracy increases), random (for benchmark)
+class BotBrain {
+    static W = [  // move feature weights per skill
+        { gain: 10, hang: -8,  check: 1,   devel: 0.3, king: 0.2, wing: 0 },   // CAPTURE
+        { gain: 3,  hang: -8,  check: 0.5, devel: 4,   king: 0,   wing: 0 },   // DEVELOP
+        { gain: 4,  hang: -14, check: 0.5, devel: 0.3, king: 0,   wing: 0 },   // SAFETY
+        { gain: 4,  hang: -10, check: 0,   devel: 0.5, king: 0,   wing: 3 },   // GUARD
+        { gain: 5,  hang: -4,  check: 4,   devel: 0,   king: 1.2, wing: 0 }    // ATTACK
+    ];
+
+    // Levels: n = bonus to line misread probability, %
+    static LEVELS = [
+        { name: 'Unrated', short: 'Unrated', n: 60 },
+        { name: 'Class 4', short: 'C4', n: 50 },
+        { name: 'Junior Class 3', short: 'J3', n: 45 },
+        { name: 'Class 3', short: 'C3', n: 35 },
+        { name: 'Class 2', short: 'C2', n: 25 },
+        { name: 'Class 1', short: 'C1', n: 20 },
+        { name: 'Candidate Master', short: 'CM', n: 15 },
+        { name: 'Master', short: 'M', n: 10 },
+        { name: 'Grandmaster', short: 'GM', n: 5 }
+    ];
+    
+    // Base misread probability per style: CAPTURE, DEVELOP, SAFETY, GUARD, ATTACK.
+    // Attacking style uses 10% + n; others use 6/4/2/2%.
+    static BASE = [6, 4, 2, 2, 10];
+
+    constructor(opt = {}) {
+        this.opt = Object.assign({ prior: true, learn: true, grow: true, random: false, fixed: -1, xp0: 0, level: null }, opt);
+        this.SKILLS = ['CAPTURE', 'DEVELOP', 'SAFETY', 'GUARD', 'ATTACK'];
+        this.NS = 24;          // 3 phases x 4 material balances x 2 (threat present)
+        this.alpha = 0.15;
+        this.HOLD = 3;         // hold plan for at least 3 moves
+        this.xp = this.opt.xp0;
+        this.laneDanger = [0, 0, 0];   // flank: queenside / center / kingside
+        this.usage = [0, 0, 0, 0, 0];
+        this.trace = [];
+        this.cur = null;
+        this.mis = { n: 0, m: 0 };     // lines evaluated / misread
+        this.Q = [];
+        for (let s = 0; s < this.NS; s++) {
+            const row = [0, 0, 0, 0, 0];
+            if (this.opt.prior) row[this.idealSkill(s)] = 0.3;
+            this.Q.push(row);
+        }
+    }
+    get acc() { return 0.5 + 0.5 * (1 - Math.exp(-this.xp / 12000)); }
+    clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+    gauss() { return (Math.random() + Math.random() + Math.random() - 1.5) * 1.15; }
+
+    idealSkill(s) {
+        const phase = Math.floor(s / 8), mat = Math.floor((s % 8) / 2), threat = s % 2;
+        if (threat) return 2;            // threat: SAFETY
+        if (phase === 0) return 1;       // opening: DEVELOP
+        return mat >= 1 ? 0 : 4;         // not losing: CAPTURE, losing: ATTACK
+    }
+
+    encode(pos, me, ply) {
+        let np = 0;
+        for (const p of pos.b) { const a = Math.abs(p); if (a > 1 && a < 6) np += Chess.VAL[a]; }
+        const phase = np <= 26 ? 2 : (ply < 16 ? 0 : 1);
+        const bal = Chess.balance(pos.b, me);
+        const mat = bal < -2 ? 0 : bal < 0.5 ? 1 : bal < 3 ? 2 : 3;
+        const threat = Chess.maxLoss({ ...pos, t: -me }, me) >= 2 ? 1 : 0;
+        return { s: phase * 8 + mat * 2 + threat, bal };
+    }
+
+    feats(pos, m, me, hot) {
+        const p = Math.abs(pos.b[m.f]), p2 = Chess.make(pos, m);
+        const ek = Chess.kingSq(p2.b, -me);
+        const homeRow = me === 1 ? 7 : 0, fr = m.f >> 3, tr = m.t >> 3, tc = m.t & 7, ff = m.f & 7;
+        let devel = 0;
+        if (m.e === 2) devel += 1.5;
+        if ((p === 2 || p === 3) && fr === homeRow) devel += 1;
+        if (p === 1 && (ff === 3 || ff === 4) && Math.abs(tr - fr) === 2) devel += 1;
+        if (p !== 6 && tr >= 2 && tr <= 5 && tc >= 2 && tc <= 5) devel += 0.4;
+        let king = 0;
+        if (p !== 1 && p !== 6 && ek >= 0) {
+            const d = s => Math.max(Math.abs((s >> 3) - (ek >> 3)), Math.abs((s & 7) - (ek & 7)));
+            king = d(m.f) - d(m.t);
+        }
+        return {
+            gain: Chess.captureValue(pos, m),
+            hang: Chess.maxLoss(p2, me),
+            check: ek >= 0 && Chess.attacked(p2.b, ek, me) ? 1 : 0,
+            devel, king,
+            wing: hot >= 0 && Chess.lane(m.t) === hot ? 1 : 0,
+            p2
+        };
+    }
+
+    // Misread prob = (style base + level n) / 100; if no level = 0 (growth model applies instead)
+    pmFor(a) {
+        const lv = this.opt.level;
+        return lv == null ? 0 : Math.min(0.95, (BotBrain.BASE[a] + BotBrain.LEVELS[lv].n) / 100);
+    }
+    
+    // Line misread: 50% misses refutation, 30% misjudges gain, 20% confuses with another line
+    misread(f, F) {
+        const r = Math.random();
+        if (r < 0.5) return { ...f, hang: 0 };
+        if (r < 0.8) return { ...f, gain: f.gain * (0.3 + Math.random() * 1.4), check: 0 };
+        return { ...F[Math.floor(Math.random() * F.length)], p2: f.p2 };
+    }
+
+    // Skill picks the concrete move. With level: each line is misread with prob pm.
+    // Without level: old model (perception accuracy grows with xp)
+    pickMove(pos, legal, a, me) {
+        const W = BotBrain.W[a], lvl = this.opt.level != null, pm = this.pmFor(a);
+        const sig = lvl ? 0 : (1 - this.acc) * 1.2;
+        const blind = !lvl && Math.random() < (1 - this.acc) * 0.3;
+        let h = 0;
+        for (let i = 1; i < 3; i++) if (this.laneDanger[i] > this.laneDanger[h]) h = i;
+        const hot = this.laneDanger[h] > 0.5 ? h : -1;
+        const F = legal.map(m => this.feats(pos, m, me, hot));
+        let best = null, bs = -1e9;
+        legal.forEach((m, i) => {
+            let f = F[i], bad = false;
+            if (pm > 0) {
+                this.mis.n++;
+                if (Math.random() < pm) { bad = true; this.mis.m++; f = this.misread(f, F); }
+            }
+            let sc = W.gain * f.gain + (blind ? 0 : W.hang * f.hang) + W.check * f.check +
+                     W.devel * f.devel + W.king * f.king + W.wing * f.wing +
+                     Math.random() * 0.3 + this.gauss() * sig;
+            if (!bad && F[i].check && Chess.moves(F[i].p2).length === 0) sc += 1000;   // mate in 1 (misread misses it)
+            if (sc > bs) { bs = sc; best = m; }
+        });
+        return best;
+    }
+
+    choose(s) {
+        if (this.opt.fixed >= 0) return this.opt.fixed;
+        if (this.opt.random) return Math.floor(Math.random() * 5);
+        const row = this.Q[s];
+        const order = [0, 1, 2, 3, 4].sort((a, b) => row[b] - row[a]);
+        const acc = this.opt.level != null ? 1 : this.acc;     // with level, errors are set by pm, not "maturity"
+        if (Math.random() < 0.05 || Math.random() < (1 - acc) * 0.4) return order[1];
+        return order[0];
+    }
+
+    credit(s, a, amount) {
+        if (!this.opt.learn) return;
+        this.Q[s][a] = this.clamp(this.Q[s][a] + amount, -2, 2);
+    }
+
+    decide(st) {
+        const t0 = performance.now();
+        const pos = st.pos, me = pos.t;
+        const legal = Chess.moves(pos);
+        const { s, bal } = this.encode(pos, me, st.ply);
+        if (this.opt.grow) this.xp++;
+        if (!this.cur || this.cur.left <= 0) {
+            // Reward previous plan: how much material changed
+            if (this.cur) this.credit(this.cur.s, this.cur.a, this.alpha * (bal - this.cur.bal) / 3);
+            const a = this.choose(s);
+            this.usage[a]++;
+            this.trace.push({ s, a });
+            if (this.trace.length > 8) this.trace.shift();
+            this.cur = { s, a, left: this.HOLD, bal };
+        }
+        this.cur.left--;
+        return {
+            id: st.id, skill: this.SKILLS[this.cur.a],
+            move: legal.length ? this.pickMove(pos, legal, this.cur.a, me) : null,
+            ms: performance.now() - t0, xp: this.xp,
+            pm: this.pmFor(this.cur.a), acc: this.opt.level != null ? 1 - this.pmFor(this.cur.a) : this.acc,
+            miss: this.mis.m, lines: this.mis.n,
+            usage: this.usage.slice(), danger: this.laneDanger.slice()
+        };
+    }
+
+    // who: 'bot' | 'player' | 'draw'; lane: event flank; w: weight (mate = 3)
+    onGoal(who, lane, w = 1) {
+        let r = who === 'bot' ? w : (who === 'player' ? -w : 0);
+        if (who === 'player') {
+            this.laneDanger = this.laneDanger.map(v => v * 0.7);
+            this.laneDanger[lane] += 1;
+            if (this.laneDanger[lane] >= 1.5) r -= 0.5;   // repeat on same flank = pattern
+        } else {
+            this.laneDanger = this.laneDanger.map(v => v * 0.85);
+        }
+        for (let i = this.trace.length - 1, age = 0; i >= 0; i--, age++) {
+            this.credit(this.trace[i].s, this.trace[i].a, this.alpha * Math.pow(0.7, age) * r);
+        }
+        if (this.opt.grow) this.xp += 150;
+        this.trace = [];
+        this.cur = null;
+    }
+
+    handle(msg) {
+        if (msg.type === 'goal') { this.onGoal(msg.who, msg.lane, msg.w); return null; }
+        if (msg.type === 'forget') { Object.assign(this, new BotBrain(this.opt)); return null; }
+        return this.decide(msg.s);
+    }
+}
+
+// Game adapter: Worker (default) or sync mode (benchmark / fallback)
+class BotAlgorithm {
+    constructor(o = {}) {
+        this.mode = '-'; this.calcMs = 0; this.acc = 0.5; this.xp = 0;
+        this.usage = [0, 0, 0, 0, 0]; this.danger = [0, 0, 0];
+        this.pm = 0; this.miss = 0; this.lines = 0;
+        this.decision = null; this.asking = false;
+        this.tickId = 0; this.curId = 0; this.minId = 0;
+        this.worker = null; this.local = null;
+        this.opt = o.opt || {};
+        if (o.brain) this.local = o.brain;
+        else if (o.sync) this.local = new BotBrain(this.opt);
+        else this.initWorker();
+    }
+
+    initWorker() {
+        try {
+            const src = `
+                const Chess = ${Chess.toString()};
+                const BotBrain = ${BotBrain.toString()};
+                const brain = new BotBrain(${JSON.stringify(this.opt)});
+                self.onmessage = (e) => { const r = brain.handle(e.data); if (r) self.postMessage(r); };
+            `;
+            const url = URL.createObjectURL(new Blob([src], { type: 'application/javascript' }));
+            this.worker = new Worker(url);
+            this.worker.onmessage = (e) => this.accept(e.data);
+            this.worker.onerror = () => {
+                console.warn('Worker failed, fallback to sync brain');
+                this.worker = null; this.asking = false; this.local = new BotBrain(this.opt);
+            };
+        } catch (err) {
+            console.warn('Worker unavailable, fallback to sync brain', err);
+            this.worker = null; this.local = new BotBrain(this.opt);
+        }
+    }
+
+    accept(d) {
+        if (d.id < this.minId) return;
+        this.decision = d; this.mode = d.skill; this.calcMs = d.ms;
+        this.acc = d.acc; this.xp = d.xp; this.usage = d.usage; this.danger = d.danger;
+        this.pm = d.pm; this.miss = d.miss; this.lines = d.lines;
+    }
+
+    send(msg) {
+        if (this.worker) this.worker.postMessage(msg);
+        else if (this.local) return this.local.handle(msg);
+    }
+
+    destroy() { if (this.worker) { this.worker.terminate(); this.worker = null; } }
+
+    reset() { this.decision = null; this.asking = false; this.mode = '-'; this.minId = this.tickId + 1; }
+
+    forget() {
+        this.send({ type: 'forget' });
+        this.acc = 0.5; this.xp = 0; this.usage = [0, 0, 0, 0, 0]; this.danger = [0, 0, 0];
+    }
+
+    onGoal(who, lane, w = 1) { this.send({ type: 'goal', who, lane, w }); }
+
+    // Returns bot move when ready (Worker: next frame), else null
+    decideMove(pos, ply) {
+        if (!this.asking) {
+            this.asking = true;
+            this.curId = ++this.tickId;
+            const msg = { type: 'sense', s: { id: this.curId, pos, ply } };
+            if (this.worker) this.worker.postMessage(msg);
+            else this.accept(this.local.handle(msg));
+        }
+        if (this.decision && this.decision.id === this.curId) {
+            const m = this.decision.move;
+            this.asking = false; this.decision = null;
+            return m;
+        }
+        return null;
+    }
+}
+
+// BLOCK 3: CHESS GAME (ctx = null -> headless for benchmark)
+class ChessGame {
+    constructor(ctx, botAlgo) {
+        this.ctx = ctx;
+        this.botAlgo = botAlgo;
+        this.analyzeEvery = 0;                       // 0 = don't evaluate bot move quality
+        this.totalQ = { n: 0, c: 0, a: 0, t: 0, b: 0 };    // accumulated quality (not reset between games)
+        this.reset();
+    }
+
+    reset() {
+        if (this.botAlgo) this.botAlgo.reset();
+        this.pos = Chess.start();
+        this.ply = 0; this.over = null; this.last = null;
+        this.sel = -1; this.targets = [];
+        this._legal = null;
+        this.lastBal = 0;
+        this.qual = { n: 0, c: 0, a: 0, t: 0, b: 0 };       // bot move quality in current game
+        this.botMoves = 0;
+    }
+
+    legal() {
+        if (!this._legal || this._legal.pos !== this.pos) this._legal = { pos: this.pos, list: Chess.moves(this.pos) };
+        return this._legal.list;
+    }
+
+    // human = human move {f, t} (white). Returns 'bot' | 'player' | 'draw' on game end
+    update(human) {
+        if (this.over) return this.over;
+        let m;
+        if (this.pos.t === -BOT) { m = human; if (!m) return null; }
+        else { m = this.botAlgo.decideMove(this.pos, this.ply); if (!m) return null; }
+        return this.apply(m);
+    }
+
+    apply(m) {
+        const lm = this.legal().find(x => x.f === m.f && x.t === m.t);
+        if (!lm) return null;
+        const mover = this.pos.t;
+        if (mover === BOT && this.analyzeEvery && this.botMoves++ % this.analyzeEvery === 0) {
+            const q = Chess.quality(this.pos, lm);
+            for (const Q of [this.qual, this.totalQ]) { Q.n++; Q.c += q.cpl; Q.a += q.acc; Q.t += q.top1; Q.b += q.blun; }
+        }
+        this.pos = Chess.make(this.pos, lm);
+        this.ply++; this.last = lm; this.sel = -1; this.targets = [];
+
+        // Learning events: major material swing = "goal"
+        const bal = Chess.balance(this.pos.b, BOT), delta = bal - this.lastBal;
+        this.lastBal = bal;
+        if (Math.abs(delta) >= 3) this.botAlgo.onGoal(delta > 0 ? 'bot' : 'player', Chess.lane(lm.t), 1);
+
+        if (this.legal().length === 0) {
+            if (Chess.inCheck(this.pos, this.pos.t)) {
+                this.over = mover === BOT ? 'bot' : 'player';
+                this.botAlgo.onGoal(this.over, Chess.lane(lm.t), 3);   // mate
+            } else this.finishDraw();
+        } else if (Chess.drawish(this.pos)) this.finishDraw();
+        return this.over;
+    }
+
+    finishDraw() { this.over = 'draw'; this.botAlgo.onGoal('draw', 1, 1); }
+
+    // Game limit: material win (diff >= 3) or draw
+    adjudicate() {
+        if (this.over) return this.over;
+        const bal = Chess.balance(this.pos.b, BOT);
+        if (Math.abs(bal) >= 3) {
+            this.over = bal > 0 ? 'bot' : 'player';
+            this.botAlgo.onGoal(this.over, this.last ? Chess.lane(this.last.t) : 1, 2);
+        } else this.finishDraw();
+        return this.over;
+    }
+
+    status() {
+        if (this.over === 'bot') return 'Checkmate: bot (Red) wins. Click to restart';
+        if (this.over === 'player') return 'Checkmate: You win! Click to restart';
+        if (this.over === 'draw') return 'Draw. Click to restart';
+        const chk = Chess.inCheck(this.pos, this.pos.t) ? ' (check)' : '';
+        return this.pos.t === -BOT ? 'Your turn (Blue)' + chk : 'Bot is thinking' + chk;
+    }
+
+    draw() {
+        const c = this.ctx;
+        if (!c) return;
+        const { X, Y, SQ } = BOARD, G = { 1: '♟', 2: '♞', 3: '♝', 4: '♜', 5: '♛', 6: '♚' };
+        c.clearRect(0, 0, 600, 800);
+        c.fillStyle = '#ddd'; c.font = '16px monospace'; c.textAlign = 'left'; c.textBaseline = 'alphabetic';
+        c.fillText(this.status(), X, 64);
+        c.fillStyle = '#777'; c.font = '12px monospace';
+        c.fillText('Ply: ' + this.ply + '   Material (You − Bot): ' + Chess.balance(this.pos.b, -BOT), X, 90);
+
+        const kSq = Chess.inCheck(this.pos, this.pos.t) ? Chess.kingSq(this.pos.b, this.pos.t) : -1;
+        for (let s = 0; s < 64; s++) {
+            const r = s >> 3, col = s & 7, x = X + col * SQ, y = Y + r * SQ;
+            c.fillStyle = (r + col) % 2 ? '#232842' : '#3b4160';
+            c.fillRect(x, y, SQ, SQ);
+            if (this.last && (s === this.last.f || s === this.last.t)) { c.fillStyle = 'rgba(241,196,15,.25)'; c.fillRect(x, y, SQ, SQ); }
+            if (s === this.sel) { c.fillStyle = 'rgba(52,152,219,.5)'; c.fillRect(x, y, SQ, SQ); }
+            if (s === kSq) { c.fillStyle = 'rgba(231,76,60,.5)'; c.fillRect(x, y, SQ, SQ); }
+        }
+        c.textAlign = 'center'; c.textBaseline = 'middle'; c.font = '46px serif';
+        for (let s = 0; s < 64; s++) {
+            const p = this.pos.b[s];
+            if (!p) continue;
+            const x = X + (s & 7) * SQ + SQ / 2, y = Y + (s >> 3) * SQ + SQ / 2 + 3;
+            c.lineWidth = 2; c.strokeStyle = '#000'; c.strokeText(G[Math.abs(p)], x, y);
+            c.fillStyle = p > 0 ? '#3498db' : '#e74c3c';
+            c.fillText(G[Math.abs(p)], x, y);
+        }
+        for (const t of this.targets) {
+            c.fillStyle = 'rgba(46,204,113,.7)';
+            c.beginPath(); c.arc(X + (t & 7) * SQ + SQ / 2, Y + (t >> 3) * SQ + SQ / 2, 8, 0, Math.PI * 2); c.fill();
+        }
+        c.fillStyle = '#666'; c.font = '11px monospace'; c.textBaseline = 'alphabetic';
+        for (let i = 0; i < 8; i++) {
+            c.fillText('abcdefgh'[i], X + i * SQ + SQ / 2, Y + 8 * SQ + 14);
+            c.fillText(8 - i, X - 14, Y + i * SQ + SQ / 2 + 4);
+        }
+    }
+}
+
+// BLOCK 4: BENCHMARK (agents x opponents x repeats, parallel in Workers)
+const ABLATION = [
+    { name: 'Random',     color: '#b58b63', opt: { prior: false, learn: false, grow: false, random: true } },
+    { name: 'Scripted',   color: '#8f99a8', opt: { prior: true,  learn: false, grow: false } },
+    { name: 'Learn-only', color: '#9f8fbd', opt: { prior: true,  learn: true,  grow: false } },
+    { name: 'Grow-only',  color: '#c7a95f', opt: { prior: true,  learn: false, grow: true } },
+    { name: 'Adaptive',   color: '#63a67f', opt: { prior: true,  learn: true,  grow: true } },
+    { name: 'Scratch',    color: '#5ea6a3', opt: { prior: false, learn: true,  grow: true } },
+    { name: 'Full (ceiling)', color: '#6f93c4', opt: { prior: true, learn: false, grow: false, xp0: 1e6 } }
+];
+let AGENTS = ABLATION;
+const A = { RANDOM: 0, SCRIPTED: 1, LEARN: 2, GROW: 3, ADAPTIVE: 4, SCRATCH: 5, FULL: 6 };
+
+const STYLES = [
+    { id: 'adaptive', name: 'Adaptive (learning)',  short: 'Adapt' },
+    { id: '0', name: 'CAPTURE (trader)',   short: 'CAP' },
+    { id: '1', name: 'DEVELOP (builder)', short: 'DEV' },
+    { id: '2', name: 'SAFETY (cautious)',   short: 'SAF' },
+    { id: '3', name: 'GUARD (defender)',      short: 'GRD' },
+    { id: '4', name: 'ATTACK (aggressive)',    short: 'ATK' }
+];
+const STYLE_COLORS = ['#63a67f', '#b58b63', '#c7a95f', '#6f93c4', '#9f8fbd', '#b06a6a'];
+const styleOf = id => STYLES.find(s => s.id === String(id));
+const levelColor = i => `hsl(${28 + i * 22}, 30%, 60%)`;
+
+function makeBotOpt(styleId, lv) {
+    const adaptive = styleId === 'adaptive';
+    return { prior: true, learn: adaptive, grow: lv == null, level: lv, fixed: adaptive ? -1 : +styleId };
+}
+function botAgent(styleId, lv, color) {
+    const s = styleOf(styleId), L = BotBrain.LEVELS[lv];
+    const adaptive = styleId === 'adaptive';
+    const base = adaptive ? null : BotBrain.BASE[+styleId];
+    const probability = adaptive
+        ? `${Math.min(...BotBrain.BASE) + L.n}–${Math.max(...BotBrain.BASE) + L.n}% (depends on active skill)`
+        : `${base + L.n}% (${base}% + n=${L.n}%)`;
+    return {
+        name: `${s.name} · ${L.name}`, short: `${s.short}·${L.short}`, color, opt: makeBotOpt(styleId, lv),
+        styleId: String(styleId), level: lv, targetMis: adaptive ? null : (base + L.n) / 100,
+        tip: `<b>${s.name} · ${L.name}</b><br>Level n = ${L.n}%<br>Target line misread prob: ${probability}<br>Probability applies to each candidate line when picking a move.`
+    };
+}
+function buildAgents(mode, styleId, lv) {
+    if (mode === 'ladder') return BotBrain.LEVELS.map((_, i) => botAgent(styleId, i, levelColor(i)));
+    if (mode === 'arche') return STYLES.map((s, i) => botAgent(s.id, lv, STYLE_COLORS[i]));
+    if (mode === 'grid') return STYLES.flatMap((s, si) =>
+        BotBrain.LEVELS.map((_, li) => botAgent(s.id, li, STYLE_COLORS[si])));
+    return ABLATION;
+}
+function fillSelect(id, items) {
+    document.getElementById(id).innerHTML = items.map(([v, t]) => `<option value="${v}">${t}</option>`).join('');
+}
+
+const CFG = {
+    solid:    { cap: 10, hang: 7,  wingW: 2, noise: 3,  check: 1 },
+    careful:  { cap: 4,  hang: 14, wingW: 0, noise: 3,  check: 1 },
+    reckless: { cap: 10, hang: 0,  wingW: 0, noise: 3,  check: 1 },
+    noisy:    { cap: 6,  hang: 3,  wingW: 0, noise: 12, check: 1 }
+};
+
+const OPPONENTS = [
+    { name: 'Style·CAPTURE', short: 'S·CAP',  d: { kind: 'style', skill: 0 } },
+    { name: 'Style·DEVELOP', short: 'S·DEV',  d: { kind: 'style', skill: 1 } },
+    { name: 'Style·SAFETY',  short: 'S·SAF',  d: { kind: 'style', skill: 2 } },
+    { name: 'Style·ATTACK',  short: 'S·ATK',  d: { kind: 'style', skill: 4 } },
+    { name: 'Wing·King (presses kingside)', short: 'WingK', d: { kind: 'cfg', cfg: CFG.solid, wing: 2 } },
+    { name: 'Wing·Queen (presses queenside)',   short: 'WingQ', d: { kind: 'cfg', cfg: CFG.solid, wing: 0 } },
+    { name: 'Careful (rarely blunders)',  short: 'Careful', d: { kind: 'cfg', cfg: CFG.careful,  wing: -1 } },
+    { name: 'Reckless (blunders pieces)',   short: 'Reckl.',  d: { kind: 'cfg', cfg: CFG.reckless, wing: -1 } },
+    { name: 'Noisy (almost random)',    short: 'Noisy',   d: { kind: 'cfg', cfg: CFG.noisy,    wing: -1 } },
+    { name: 'Switcher (switches flank every 30 games)', short: 'Switch', d: { kind: 'cfg', cfg: CFG.solid, wing: 2, switchEvery: 30 } }
+];
+const PRESETS = {
+    quick:    { opps: [3, 4, 6, 9],                reps: 4,  games: 60 },
+    standard: { opps: [0,1,2,3,4,5,6,7,8,9],       reps: 6,  games: 80 },
+    deep:     { opps: [0,1,2,3,4,5,6,7,8,9],       reps: 10, games: 100 }
+};
+
+// Scripted player: greedy, considers blunders, likes to press the chosen flank (wing: 0/1/2, -1 = none)
+function scriptedPlayer(pos, c, wing) {
+    const me = pos.t, moves = Chess.moves(pos);
+    let best = null, bs = -1e9;
+    for (const m of moves) {
+        const p2 = Chess.make(pos, m);
+        let sc = Chess.captureValue(pos, m) * c.cap - Chess.maxLoss(p2, me) * c.hang +
+                 (wing >= 0 && Chess.lane(m.t) === wing ? c.wingW : 0) + Math.random() * c.noise;
+        const ek = Chess.kingSq(p2.b, -me);
+        if (ek >= 0 && Chess.attacked(p2.b, ek, me)) {
+            sc += c.check;
+            if (Chess.moves(p2).length === 0) sc += 1000;
+        }
+        if (sc > bs) { bs = sc; best = m; }
+    }
+    return best;
+}
+
+function makeOpponent(d) {
+    if (d.kind === 'style') {
+        const br = new BotBrain({ prior: true, learn: false, grow: false, xp0: 1e6, fixed: d.skill });
+        let id = 0;
+        return pos => br.decide({ id: ++id, pos, ply: 30 }).move;
+    }
+    return (pos, gi) => scriptedPlayer(pos, d.cfg, d.switchEvery ? (Math.floor(gi / d.switchEvery) % 2 ? 0 : 2) : d.wing);
+}
+
+// One series: fresh agent plays job.games consecutively vs one opponent (experience accumulates within series)
+function runJob(job) {
+    const brain = new BotBrain(job.opt);
+    const game = new ChessGame(null, new BotAlgorithm({ brain }));
+    game.analyzeEvery = job.qEvery || 0;
+    const oppFn = makeOpponent(job.opp);
+    const scores = [], qn = [], qc = [], qa = [], qt = [], qb = [];
+    const lineCounts = [], missCounts = [];
+    let plies = 0, decisions = 0, msSum = 0;
+    const t0 = performance.now();
+    for (let r = 0; r < job.games; r++) {
+        game.reset();
+        const linesBefore = brain.mis.n, missBefore = brain.mis.m;
+        let res = null;
+        while (!res && game.ply < 120) {           // 120 ply limit, then adjudicate by material
+            const botTurn = game.pos.t === BOT;
+            res = game.update(botTurn ? null : oppFn(game.pos, r));
+            plies++;
+            if (botTurn) { decisions++; msSum += game.botAlgo.calcMs; }
+        }
+        qn.push(game.qual.n); qc.push(game.qual.c); qa.push(game.qual.a); qt.push(game.qual.t); qb.push(game.qual.b);
+        if (!res) res = game.adjudicate();
+        scores.push(res === 'bot' ? 1 : (res === 'player' ? 0 : 0.5));
+        lineCounts.push(brain.mis.n - linesBefore);
+        missCounts.push(brain.mis.m - missBefore);
+    }
+    return { a: job.a, j: job.j, r: job.r, scores, qn, qc, qa, qt, qb, lineCounts, missCounts,
+        lines: brain.mis.n, miss: brain.mis.m, plies, decisions, msSum, secs: (performance.now() - t0) / 1000 };
+}
+
+function benchWorkerSource() {
+    return `const BOT = ${BOT};
+const Chess = ${Chess.toString()};
+const BotBrain = ${BotBrain.toString()};
+const BotAlgorithm = ${BotAlgorithm.toString()};
+const ChessGame = ${ChessGame.toString()};
+${scriptedPlayer.toString()}
+${makeOpponent.toString()}
+${runJob.toString()}
+self.onmessage = e => self.postMessage(runJob(e.data));`;
+}
+
+// Returns res[agent][opponent j][repeat r] = series result
+async function runBenchmark(cfg, progress, cancelled) {
+    const jobs = [];
+    for (let r = 0; r < cfg.reps; r++)                     // repeat-major order: keeps cells full if stopped
+        for (let j = 0; j < cfg.opps.length; j++)
+            for (let a = 0; a < cfg.agents.length; a++)
+                jobs.push({ a, j, r, opt: cfg.agents[a].opt, opp: OPPONENTS[cfg.opps[j]].d, games: cfg.games, qEvery: 3 });
+    const res = cfg.agents.map(() => cfg.opps.map(() => []));
+    let done = 0;
+    const put = d => { res[d.a][d.j][d.r] = d; progress(++done, jobs.length); };
+
+    let workers = [];
+    try {
+        const url = URL.createObjectURL(new Blob([benchWorkerSource()], { type: 'application/javascript' }));
+        const n = Math.min(navigator.hardwareConcurrency || 2, 8);
+        for (let i = 0; i < n; i++) workers.push(new Worker(url));
+    } catch (err) { workers = []; }
+
+    if (workers.length) {
+        await new Promise((resolve, reject) => {
+            let next = 0, finished = 0;
+            const feed = w => {
+                if (cancelled() || next >= jobs.length) {
+                    w.terminate();
+                    if (++finished === workers.length) resolve();
+                    return;
+                }
+                w.onmessage = e => { put(e.data); feed(w); };
+                w.onerror = e => { workers.forEach(x => x.terminate()); reject(new Error(e.message || 'worker error')); };
+                w.postMessage(jobs[next++]);
+            };
+            workers.forEach(feed);
+        });
+    } else {
+        for (const job of jobs) {                          // fallback: sync
+            if (cancelled()) break;
+            put(runJob(job));
+            await new Promise(r => setTimeout(r));
+        }
+    }
+    return res;
+}
+
+// ---------- metrics, statistics, interactive charts ----------
+const $ = id => document.getElementById(id);
+const fin = xs => xs.filter(Number.isFinite);
+const mean = xs => { const f = fin(xs); return f.length ? f.reduce((a, v) => a + v, 0) / f.length : NaN; };
+const T95 = [0, 12.71, 4.30, 3.18, 2.78, 2.57, 2.45, 2.36, 2.31, 2.26, 2.23];
+const tcrit = df => df < 1 ? 0 : df <= 10 ? T95[df] : df <= 20 ? 2.09 : df <= 30 ? 2.04 : 1.96;
+function stats(xs) {
+    xs = fin(xs);
+    const n = xs.length, m = n ? xs.reduce((a, v) => a + v, 0) / n : NaN;
+    const v = n > 1 ? xs.reduce((a, x) => a + (x - m) * (x - m), 0) / (n - 1) : 0;
+    return { m, n, se: Math.sqrt(v / n), ci: tcrit(n - 1) * Math.sqrt(v / n) };
+}
+function diffStat(X, Y) {
+    const a = stats(X), b = stats(Y), se = Math.sqrt(a.se * a.se + b.se * b.se);
+    return { m: a.m - b.m, ci: tcrit(Math.min(a.n, b.n) - 1) * se };
+}
+
+const pctM = (name, better = 1) => ({
+    name, better,
+    fmt: v => (v * 100).toFixed(1) + '%', short: v => Math.round(v * 100),
+    fmtD: v => (v >= 0 ? '+' : '−') + Math.abs(v * 100).toFixed(1) + ' pp',
+    fmtCi: v => (v * 100).toFixed(1) + ' pp', axis: v => Math.round(v * 100) + '%'
+});
+const METRICS = {
+    score: pctM('Bot Score'),
+    acc:   pctM('Move Accuracy'),
+    top1:  pctM('Best-Move Match'),
+    mis:   pctM('Observed Line-Misinterpretation Rate', -1),
+    blun:  pctM('Blunder Rate (loss ≥300 cp)', -1),
+    cpl: {
+        name: 'ACPL (centipawns per move)', better: -1,
+        fmt: v => v.toFixed(1) + ' cp', short: v => Math.round(v),
+        fmtD: v => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(1) + ' cp',
+        fmtCi: v => v.toFixed(1) + ' cp', axis: v => Math.round(v) + ''
+    }
+};
+function metricRange(d, kind, lo, hi) {
+    if (kind === 'score') return mean(d.scores.slice(lo, hi));
+    if (kind === 'mis') {
+        const lines = (d.lineCounts || []).slice(lo, hi).reduce((a, v) => a + v, 0);
+        const misses = (d.missCounts || []).slice(lo, hi).reduce((a, v) => a + v, 0);
+        return lines ? misses / lines : NaN;
+    }
+    const arr = kind === 'acc' ? d.qa : kind === 'cpl' ? d.qc : kind === 'blun' ? d.qb : d.qt;
+    let n = 0, s = 0;
+    for (let i = lo; i < hi; i++) { n += d.qn[i]; s += arr[i]; }
+    if (!n) return NaN;
+    return kind === 'acc' ? s / n / 100 : s / n;
+}
+const cellVec = (cell, k) => cell.map(d => metricRange(d, k, 0, d.scores.length));
+const allVec = (res, a, k) => res[a][0].map((_, r) => mean(res[a].map(cell => metricRange(cell[r], k, 0, cell[r].scores.length))));
+function blockVec(res, a, j, n, k) {
+    const cells = j < 0 ? res[a] : [res[a][j]];
+    return Array.from({ length: n }, (_, b) => cells[0].map((_, r) => mean(cells.map(cell => {
+        const d = cell[r], z = d.scores.length / n;
+        return metricRange(d, k, Math.round(b * z), Math.round((b + 1) * z));
+    }))));
+}
+
+// ---------- tooltip ----------
+function showTip(html, x, y) {
+    const t = $('tip');
+    t.innerHTML = html; t.style.display = 'block';
+    t.style.left = Math.min(x + 14, window.innerWidth - t.offsetWidth - 8) + 'px';
+    t.style.top = Math.min(y + 14, window.innerHeight - t.offsetHeight - 8) + 'px';
+}
+function hideTip() { $('tip').style.display = 'none'; }
+document.addEventListener('mousemove', e => {
+    const t = e.target.closest && e.target.closest('[data-tip]');
+    if (t) showTip(t.dataset.tip, e.clientX, e.clientY);
+    else if (!(e.target.classList && e.target.classList.contains('hv'))) hideTip();
+});
+const esc = s => s.replace(/"/g, '&quot;');
+
+// ---------- agent x opponent matrix ----------
+function renderMatrix(last) {
+    const { res, cfg, kind } = last, M = METRICS[kind];
+    const cells = AGENTS.map((_, a) => cfg.opps.map((_, j) => stats(cellVec(res[a][j], kind))));
+    const vals = fin(cells.flat().map(s => s.m));
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    const col = v => {
+        let t = hi > lo ? (v - lo) / (hi - lo) : 0.5;
+        if (M.better < 0) t = 1 - t;
+        return `hsl(${Math.round(8 + t * 112)},26%,${23 + Math.round(t * 5)}%)`;
+    };
+    let h = '<tr><th>Bot (style · level) ↓ / opponent archetype →</th>' + cfg.opps.map(o => `<th data-tip="${esc('Opponent archetype: ' + OPPONENTS[o].name)}">${OPPONENTS[o].short}</th>`).join('') + '<th>Σ ±CI</th></tr>';
+    AGENTS.forEach((ag, a) => {
+        h += `<tr><td data-tip="${esc(ag.tip || ag.name)}"><span class="sw" style="background:${ag.color}"></span>${ag.short || ag.name}</td>`;
+        cfg.opps.forEach((o, j) => {
+            const s = cells[a][j];
+            const tip = esc(`${ag.tip || `<b>${ag.name}</b>`}<br><b>Opponent archetype:</b> ${OPPONENTS[o].name}<br>${M.name}: <b>${M.fmt(s.m)}</b> ±${M.fmtCi(s.ci)}<br>${s.n} repeats × ${cfg.games} games`);
+            h += `<td data-tip="${tip}" style="background:${col(s.m)}">${Number.isFinite(s.m) ? M.short(s.m) : '–'}</td>`;
+        });
+        const t = stats(allVec(res, a, kind));
+        h += `<td data-tip="${esc(`<b>${ag.name}</b>, average over all opponents<br>${M.fmt(t.m)} ±${M.fmtCi(t.ci)}`)}"><b>${M.short(t.m)}</b>±${M.short(t.ci)}</td></tr>`;
+    });
+    $('bmTable').innerHTML = h;
+}
+
+// ---------- learning curve ----------
+const CH = { series: [], ranges: [], markers: [], hidden: new Set(), idx: -1, kind: 'score', geo: null };
+
+function setChart(last, j) {
+    const { res, cfg, kind } = last, n = 10, z = cfg.games / n;
+    CH.kind = kind; CH.idx = -1;
+    CH.series = AGENTS.map(ag => ({ name: ag.short || ag.name, color: ag.color }));
+    CH.series.forEach((s, a) => { const bv = blockVec(res, a, j, n, kind).map(stats); s.m = bv.map(x => x.m); s.ci = bv.map(x => x.ci); });
+    CH.ranges = Array.from({ length: n }, (_, b) => [Math.round(b * z) + 1, Math.round((b + 1) * z)]);
+    CH.markers = [];
+    if (j >= 0 && OPPONENTS[cfg.opps[j]].d.switchEvery) {
+        const e = OPPONENTS[cfg.opps[j]].d.switchEvery;
+        for (let g = e; g < cfg.games; g += e) CH.markers.push(g / z - 0.5);
+    }
+    $('bmLegend').innerHTML = CH.series.map((s, i) =>
+        `<span class="lg${CH.hidden.has(i) ? ' off' : ''}" data-i="${i}"><span class="sw" style="background:${s.color}"></span>${s.name}</span>`).join('') +
+        (CH.markers.length ? '<span style="color:#a06a6a">┆ flank switch</span>' : '') +
+        `<div>Hover over the chart for values. Click a legend entry to hide its line. Band = 95% confidence interval across ${res[0][0].length} repeats; each block = ${z} games.</div>`;
+    drawChart();
+}
+
+function drawChart() {
+    const cv = $('bmChart'), S = CH.series;
+    if (!S.length) return;
+    const M = METRICS[CH.kind], dpr = window.devicePixelRatio || 1, W = cv.clientWidth || 520, H = 260;
+    cv.width = W * dpr; cv.height = H * dpr; cv.style.height = H + 'px';
+    const c = cv.getContext('2d');
+    c.scale(dpr, dpr);
+    const L = 44, Rm = 12, T = 12, B = 30, n = S[0].m.length;
+    let lo = Infinity, hi = -Infinity;
+    S.forEach((q, k) => { if (!CH.hidden.has(k)) q.m.forEach((v, i) => { if (Number.isFinite(v)) { lo = Math.min(lo, v - q.ci[i]); hi = Math.max(hi, v + q.ci[i]); } }); });
+    if (!Number.isFinite(lo)) { lo = 0; hi = 1; }
+    const pad = (hi - lo) * 0.08 || 0.05;
+    lo = Math.max(0, lo - pad); hi = hi + pad;
+    if (CH.kind !== 'cpl') hi = Math.min(1, hi);
+    CH.geo = { L, R: Rm, W };
+    const X = i => L + (i / Math.max(1, n - 1)) * (W - L - Rm), Y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+
+    c.font = '10px monospace'; c.lineWidth = 1;
+    for (let k = 0; k <= 4; k++) {
+        const v = lo + (hi - lo) * k / 4;
+        c.strokeStyle = '#1f222b'; c.beginPath(); c.moveTo(L, Y(v)); c.lineTo(W - Rm, Y(v)); c.stroke();
+        c.fillStyle = '#7d828d'; c.textAlign = 'right'; c.fillText(M.axis(v), L - 6, Y(v) + 3);
+    }
+    c.textAlign = 'center';
+    CH.ranges.forEach((r, i) => { c.fillStyle = '#7d828d'; c.fillText(r[1], X(i), H - B + 14); });
+    c.fillText('games (end of block)', (L + W - Rm) / 2, H - 4);
+    CH.markers.forEach(p => {
+        c.setLineDash([4, 4]); c.strokeStyle = '#8a5a5a'; c.beginPath(); c.moveTo(X(p), T); c.lineTo(X(p), H - B); c.stroke(); c.setLineDash([]);
+    });
+    S.forEach((q, k) => {
+        if (CH.hidden.has(k)) return;
+        c.globalAlpha = 0.10; c.fillStyle = q.color; c.beginPath();
+        q.m.forEach((v, i) => i ? c.lineTo(X(i), Y(v + q.ci[i])) : c.moveTo(X(i), Y(v + q.ci[i])));
+        for (let i = n - 1; i >= 0; i--) c.lineTo(X(i), Y(q.m[i] - q.ci[i]));
+        c.fill(); c.globalAlpha = 1;
+        c.strokeStyle = q.color; c.lineWidth = 2; c.lineJoin = 'round'; c.beginPath();
+        q.m.forEach((v, i) => i ? c.lineTo(X(i), Y(v)) : c.moveTo(X(i), Y(v)));
+        c.stroke();
+    });
+    if (CH.idx >= 0) {
+        c.strokeStyle = '#4a4e59'; c.lineWidth = 1; c.beginPath(); c.moveTo(X(CH.idx), T); c.lineTo(X(CH.idx), H - B); c.stroke();
+        S.forEach((q, k) => {
+            if (CH.hidden.has(k) || !Number.isFinite(q.m[CH.idx])) return;
+            c.fillStyle = q.color; c.strokeStyle = '#0b0b12'; c.lineWidth = 2;
+            c.beginPath(); c.arc(X(CH.idx), Y(q.m[CH.idx]), 4, 0, Math.PI * 2); c.stroke(); c.fill();
+        });
+    }
+}
+
+function chartTip(i) {
+    const M = METRICS[CH.kind];
+    const rows = CH.series.map((q, k) => ({ q, k })).filter(o => !CH.hidden.has(o.k) && Number.isFinite(o.q.m[i]))
+        .sort((x, y) => (y.q.m[i] - x.q.m[i]) * M.better);
+    return `<b>games ${CH.ranges[i][0]}–${CH.ranges[i][1]}</b> · ${M.name}` +
+        rows.map(o => `<div><span class="sw" style="background:${o.q.color}"></span>${o.q.name}: <b>${M.fmt(o.q.m[i])}</b> ±${M.fmtCi(o.q.ci[i])}</div>`).join('');
+}
+
+// ---------- forest plot: component contribution with 95% CI ----------
+const FO = { rows: [], kind: 'score', geo: null, hov: -1 };
+
+const pearson = ys => {
+    const xs = ys.map((_, i) => i), mx = mean(xs), my = mean(ys);
+    let sxy = 0, sxx = 0, syy = 0;
+    ys.forEach((y, i) => { sxy += (xs[i] - mx) * (y - my); sxx += (xs[i] - mx) ** 2; syy += (y - my) ** 2; });
+    return sxy / (Math.sqrt(sxx * syy) || 1);
+};
+
+function setForest(last) {
+    const { res, kind, cfg } = last, M = METRICS[kind];
+    const v = AGENTS.map((_, a) => allVec(res, a, kind));
+    const first = a => blockVec(res, a, -1, 10, kind)[0];
+    const mk = (label, f, d) => ({ label, f, d });
+    FO.kind = kind; FO.hov = -1;
+    if (cfg.mode === 'ablation') {
+        FO.rows = [
+            mk('Perception maturity',        'Grow-only − Scripted',  diffStat(v[A.GROW], v[A.SCRIPTED])),
+            mk('Q-learning of skills',         'Learn-only − Scripted', diffStat(v[A.LEARN], v[A.SCRIPTED])),
+            mk('All together (Adaptive)',      'Adaptive − Scripted',   diffStat(v[A.ADAPTIVE], v[A.SCRIPTED])),
+            mk('Start from ideal',           'Adaptive − Scratch',    diffStat(v[A.ADAPTIVE], v[A.SCRATCH])),
+            mk('Start from ideal, 1st block', 'Adaptive − Scratch, first block', diffStat(first(A.ADAPTIVE), first(A.SCRATCH))),
+            mk('Ceiling (Full)',             'Full − Scripted',       diffStat(v[A.FULL], v[A.SCRIPTED]))
+        ];
+        const d = FO.rows.map(r => r.d), eff = x => x.m * M.better, sig = x => Math.abs(x.m) > x.ci;
+        $('bmNote').textContent =
+            `Metric: ${M.name}. Main growth source: ${eff(d[0]) > eff(d[1]) ? 'perception accuracy growth' : 'Q-learning of skills'}. ` +
+            `Q-learning: ${sig(d[1]) ? (eff(d[1]) > 0 ? 'significantly better' : 'significantly worse') : 'within noise'} (${M.fmtD(d[1].m)} ±${M.fmtCi(d[1].ci)}). ` +
+            `Adaptive closes ${Math.round(d[2].m / (d[5].m || 1) * 100)}% of the gap between Scripted and Full.`;
+    } else {
+        FO.rows = AGENTS.slice(1).map((ag, i) => mk(ag.short || ag.name, `${ag.name} − ${AGENTS[0].name}`, diffStat(v[i + 1], v[0])));
+        const means = v.map(x => stats(x).m);
+        let msg = `Metric: ${M.name}. Baseline: ${AGENTS[0].name}. `;
+        if (cfg.mode === 'ladder') {
+            const r = pearson(means) * M.better;
+            msg += `Metric vs level correlation: r = ${r.toFixed(2)} (${r > 0.7 ? 'metric improves with level' : r > 0.3 ? 'weak trend' : 'no trend'}).`;
+        } else {
+            const bi = means.reduce((b, m, i) => m * M.better > means[b] * M.better ? i : b, 0);
+            msg += `Best style at this level: ${AGENTS[bi].name} (${M.fmt(means[bi])}).`;
+        }
+        $('bmNote').textContent = msg;
+    }
+    drawForest();
+}
+
+function drawForest() {
+    const cv = $('bmForest'), rows = FO.rows;
+    if (!rows.length) return;
+    const M = METRICS[FO.kind], dpr = window.devicePixelRatio || 1, W = cv.clientWidth || 520, rowH = 34, top = 8, H = rows.length * rowH + top + 26;
+    cv.width = W * dpr; cv.height = H * dpr; cv.style.height = H + 'px';
+    const c = cv.getContext('2d');
+    c.scale(dpr, dpr);
+    const x0 = 170, x1 = W - 78;
+    const mx = Math.max(1e-9, ...rows.map(r => Math.abs(r.d.m) + r.d.ci)) * 1.15;
+    const X = v => x0 + (v + mx) / (2 * mx) * (x1 - x0);
+    FO.geo = { top, rowH };
+    c.font = '11px monospace'; c.lineWidth = 1;
+    [-mx, -mx / 2, 0, mx / 2, mx].forEach(v => {
+        c.strokeStyle = v === 0 ? '#4a4e59' : '#1f222b';
+        c.beginPath(); c.moveTo(X(v), top); c.lineTo(X(v), H - 22); c.stroke();
+        c.fillStyle = '#7d828d'; c.textAlign = 'center'; c.fillText(M.axis(v), X(v), H - 8);
+    });
+    rows.forEach((r, i) => {
+        const y = top + i * rowH + rowH / 2, sig = Math.abs(r.d.m) > r.d.ci, good = r.d.m * M.better > 0;
+        const col = !sig ? '#8f99a8' : good ? '#63a67f' : '#b06a6a';
+        if (FO.hov === i) { c.fillStyle = 'rgba(255,255,255,.05)'; c.fillRect(0, y - rowH / 2, W, rowH); }
+        c.fillStyle = '#c4c7ce'; c.textAlign = 'left'; c.fillText(r.label, 4, y + 4);
+        c.strokeStyle = col; c.lineWidth = 2; c.beginPath(); c.moveTo(X(r.d.m - r.d.ci), y); c.lineTo(X(r.d.m + r.d.ci), y); c.stroke();
+        c.beginPath(); c.arc(X(r.d.m), y, 5, 0, Math.PI * 2);
+        if (sig) { c.fillStyle = col; c.fill(); } else { c.fillStyle = '#0b0b12'; c.fill(); c.stroke(); }
+        c.fillStyle = '#c4c7ce'; c.textAlign = 'right'; c.fillText(M.fmtD(r.d.m), W - 4, y + 4);
+    });
+}
+
+function forestTip(r) {
+    const M = METRICS[FO.kind], sig = Math.abs(r.d.m) > r.d.ci, good = r.d.m * M.better > 0;
+    return `<b>${r.label}</b><br>${r.f}<br>${M.fmtD(r.d.m)} ±${M.fmtCi(r.d.ci)}<br>` +
+        (sig ? (good ? 'significantly better' : 'significantly worse') : 'within noise (interval crosses 0)');
+}
+
+// ---------- speed & actual misread rate ----------
+function renderPerf(res) {
+    $('bmPerf').innerHTML = '<tr><th>Bot (style · level)</th><th>ms/decision</th><th>kplies/s per worker</th><th>observed misinterpretations (aggregate)</th></tr>' + AGENTS.map((ag, a) => {
+        let ms = 0, dec = 0, pl = 0, sec = 0, ln = 0, mi = 0;
+        res[a].forEach(cell => cell.forEach(d => { ms += d.msSum; dec += d.decisions; pl += d.plies; sec += d.secs; ln += d.lines; mi += d.miss; }));
+        return `<tr><td data-tip="${esc(ag.tip || ag.name)}"><span class="sw" style="background:${ag.color}"></span>${ag.short || ag.name}</td><td>${(ms / Math.max(1, dec)).toFixed(3)}</td><td>${(pl / sec / 1000).toFixed(1)}</td><td>${ln ? (mi / ln * 100).toFixed(1) + '%' : '–'}</td></tr>`;
+    }).join('');
+}
+
+function renderAll(last) {
+    AGENTS = last.cfg.agents;
+    const misOption = $('bmMetric').querySelector('option[value="mis"]');
+    misOption.disabled = last.cfg.mode === 'ablation'; // old model doesn't track misreads by level
+    if (misOption.disabled && $('bmMetric').value === 'mis') $('bmMetric').value = 'score';
+    last.kind = $('bmMetric').value;
+    $('bmCurveOpp').innerHTML = '<option value="-1">All opponents (average)</option>' +
+        last.cfg.opps.map((o, j) => `<option value="${j}">${OPPONENTS[o].name}</option>`).join('');
+    renderMatrix(last);
+    setChart(last, -1);
+    setForest(last);
+    renderPerf(last.res);
+}
+
+function initBenchmarkUI() {
+    const btn = $('bmRun'), status = $('bmStatus'), preset = $('bmPreset'), mode = $('bmMode');
+    let running = false, cancel = false, last = null;
+    fillSelect('bmStyle', STYLES.map(s => [s.id, s.name]));
+    fillSelect('bmLevel', BotBrain.LEVELS.map((l, i) => [i, `${l.name} (n=${l.n})`]));
+    $('bmLevel').value = 3;
+    const agentsNow = () => buildAgents(mode.value, $('bmStyle').value, +$('bmLevel').value);
+    const hint = () => {
+        const p = PRESETS[preset.value], n = agentsNow().length;
+        const total = n * p.opps.length * p.reps * p.games;
+        $('bmHint').innerText = `${n} bots × ${p.opps.length} opponents × ${p.reps} repeats × ${p.games} games = ${total} games` +
+            (mode.value === 'grid' ? ' · For each style and level, misread prob = style base + level n. Quick is faster for first runs.' : '');
+    };
+    const sync = () => {
+        $('bmStyle').style.display = mode.value === 'ladder' ? '' : 'none';
+        $('bmLevel').style.display = mode.value === 'arche' ? '' : 'none';
+        hint();
+    };
+    mode.onchange = () => {
+        // Full grid is quite heavy: fall back to quick preset if currently standard.
+        if (mode.value === 'grid' && preset.value === 'standard') preset.value = 'quick';
+        sync();
+    };
+    preset.onchange = hint; $('bmStyle').onchange = hint; $('bmLevel').onchange = hint; sync();
+
+    $('bmMetric').onchange = () => {
+        if (!last) return;
+        AGENTS = last.cfg.agents; last.kind = $('bmMetric').value;
+        renderMatrix(last); setChart(last, parseInt($('bmCurveOpp').value)); setForest(last);
+    };
+    $('bmCurveOpp').onchange = () => last && setChart(last, parseInt($('bmCurveOpp').value));
+    $('bmLegend').addEventListener('click', e => {
+        const t = e.target.closest('.lg');
+        if (!t) return;
+        const i = +t.dataset.i;
+        CH.hidden.has(i) ? CH.hidden.delete(i) : CH.hidden.add(i);
+        t.classList.toggle('off');
+        drawChart();
+    });
+
+    const cv = $('bmChart');
+    cv.addEventListener('mousemove', e => {
+        if (!CH.geo || !CH.series.length) return;
+        const r = cv.getBoundingClientRect(), x = e.clientX - r.left, g = CH.geo, n = CH.series[0].m.length;
+        let i = Math.round((x - g.L) / (g.W - g.L - g.R) * (n - 1));
+        i = (x < g.L - 12 || x > g.W - g.R + 12) ? -1 : Math.max(0, Math.min(n - 1, i));
+        CH.idx = i; drawChart();
+        if (i >= 0) showTip(chartTip(i), e.clientX, e.clientY); else hideTip();
+    });
+    cv.addEventListener('mouseleave', () => { CH.idx = -1; drawChart(); hideTip(); });
+
+    const fo = $('bmForest');
+    fo.addEventListener('mousemove', e => {
+        if (!FO.geo) return;
+        const r = fo.getBoundingClientRect(), i = Math.floor((e.clientY - r.top - FO.geo.top) / FO.geo.rowH);
+        FO.hov = i >= 0 && i < FO.rows.length ? i : -1; drawForest();
+        if (FO.hov >= 0) showTip(forestTip(FO.rows[FO.hov]), e.clientX, e.clientY); else hideTip();
+    });
+    fo.addEventListener('mouseleave', () => { FO.hov = -1; drawForest(); hideTip(); });
+    window.addEventListener('resize', () => { if (last) { drawChart(); drawForest(); } });
+
+    btn.onclick = async () => {
+        if (running) { cancel = true; return; }
+        running = true; cancel = false; btn.innerText = 'Stop';
+        try {
+            const cfg = Object.assign({}, PRESETS[preset.value], { mode: mode.value, agents: agentsNow() });
+            const res = await runBenchmark(cfg, (d, t) => {
+                $('bmProg').style.width = (d / t * 100) + '%';
+                status.innerText = `Done ${d} of ${t} series`;
+            }, () => cancel);
+            const R = Math.min(...res.flat().map(cell => cell.filter(Boolean).length));
+            if (R < 1) status.innerText = 'Stopped before first repeat finished';
+            else {
+                res.forEach(row => row.forEach((cell, j) => row[j] = cell.slice(0, R)));
+                last = { res, cfg };
+                renderAll(last);
+                status.innerText = cancel ? `Stopped, showing ${R} repeats` : 'Done';
+            }
+        } catch (err) {
+            console.error(err);
+            status.innerText = 'Benchmark error: ' + err.message;
+        }
+        running = false; btn.innerText = 'Run Benchmark';
+    };
+}
+
+// BLOCK 5: APP CONTROLLER & UI
+class App {
+    constructor() {
+        fillSelect('styleSel', STYLES.map(s => [s.id, s.name]));
+        fillSelect('lvlSel', [['', 'No level (noise grows with experience)']].concat(BotBrain.LEVELS.map((l, i) => [i, `${l.name} (n=${l.n})`])));
+        fillSelect('oppSel', OPPONENTS.map((o, i) => [i, o.name]));
+        $('oppSel').value = 4;
+        this.canvas = document.getElementById("game");
+        this.game = new ChessGame(this.canvas.getContext("2d"), new BotAlgorithm({ opt: this.currentOpt() }));
+        this.game.analyzeEvery = 1;   // in live play, evaluate every bot move
+        this.hist = {};
+        this.oppFn = makeOpponent(OPPONENTS[+$('oppSel').value].d);
+        this.matchNum = 1; this.scorePlayer = 0; this.scoreAlgo = 0;
+        this.fps = 0; this.lastFpsUpdate = performance.now(); this.frameCount = 0;
+        this.frames = 0; this.auto = false; this.pendingHuman = null;
+        this.buildBars();
+        this.initControls();
+        this.loop();
+    }
+
+    buildBars() {
+        const mk = (id, names, cls) => {
+            document.getElementById(id).innerHTML = names.map(n =>
+                `<div class="row"><span>${n}</span><div class="bar ${cls}"><i></i></div><b>0</b></div>`).join('');
+        };
+        mk('usage', ['CAPTURE', 'DEVELOP', 'SAFETY', 'GUARD', 'ATTACK'], '');
+        mk('lanes', ['queenside', 'center', 'kingside'], 'red');
+    }
+
+    fillBars(id, values, max) {
+        const rows = document.getElementById(id).children;
+        for (let i = 0; i < rows.length; i++) {
+            rows[i].querySelector('i').style.width = Math.min(100, values[i] / max * 100) + '%';
+            rows[i].querySelector('b').innerText = max === 1 ? values[i].toFixed(1) : Math.round(values[i] / max * 100) + '%';
+        }
+    }
+
+    initControls() {
+        const accSlider = document.getElementById("accSlider"), accValue = document.getElementById("accValue");
+        accSlider.oninput = (e) => { TIME_ACCELERATION = parseInt(e.target.value); accValue.innerText = TIME_ACCELERATION; };
+
+        document.getElementById("resetMatch").onclick = () => {
+            this.scorePlayer = 0; this.scoreAlgo = 0; this.matchNum = 1;
+            this.game.totalQ = { n: 0, c: 0, a: 0, t: 0, b: 0 };
+            this.hist = {}; this.renderHist();
+            this.game.reset(); this.updateUI();
+        };
+        document.getElementById("forgetBot").onclick = () => { this.game.botAlgo.forget(); this.game.totalQ = { n: 0, c: 0, a: 0, t: 0, b: 0 }; this.game.reset(); };
+
+        const cfgChange = () => { this.rebuildBot(); };
+        $('styleSel').onchange = cfgChange; $('lvlSel').onchange = cfgChange;
+        $('oppSel').onchange = () => { this.oppFn = makeOpponent(OPPONENTS[+$('oppSel').value].d); this.game.reset(); };
+        const ap = document.getElementById("autoPlay");
+        ap.onclick = () => {
+            this.auto = !this.auto;
+            ap.classList.toggle('on', this.auto);
+            ap.innerText = 'Autoplay: Scripted Player vs Bot (' + (this.auto ? 'On' : 'Off') + ')';
+            this.game.reset(); this.pendingHuman = null;
+        };
+
+        this.canvas.addEventListener('click', e => {
+            const r = this.canvas.getBoundingClientRect();
+            const x = (e.clientX - r.left) * 600 / r.width, y = (e.clientY - r.top) * 800 / r.height;
+            const col = Math.floor((x - BOARD.X) / BOARD.SQ), row = Math.floor((y - BOARD.Y) / BOARD.SQ);
+            if (col < 0 || col > 7 || row < 0 || row > 7) return;
+            this.onSquare(row * 8 + col);
+        });
+
+        initBenchmarkUI();
+    }
+
+    botLabel() {
+        const s = styleOf($('styleSel').value), lv = $('lvlSel').value;
+        return s.short + '·' + (lv === '' ? 'grow' : BotBrain.LEVELS[+lv].short);
+    }
+    botTip() {
+        const s = styleOf($('styleSel').value), lv = $('lvlSel').value;
+        return s.name + ' · ' + (lv === '' ? 'no level (noise grows with experience)' : BotBrain.LEVELS[+lv].name);
+    }
+    oppLabel() { return this.auto ? OPPONENTS[+$('oppSel').value].short : 'Human'; }
+    oppTip() { return this.auto ? OPPONENTS[+$('oppSel').value].name : 'Human (you)'; }
+
+    currentOpt() {
+        const lv = $('lvlSel').value;
+        return makeBotOpt($('styleSel').value, lv === '' ? null : +lv);
+    }
+    rebuildBot() {
+        this.game.botAlgo.destroy();
+        this.game.botAlgo = new BotAlgorithm({ opt: this.currentOpt() });
+        this.game.totalQ = { n: 0, c: 0, a: 0, t: 0, b: 0 };
+        this.pendingHuman = null;
+        this.game.reset();
+    }
+
+    // Match history: learning bot (style · level) vs opponent archetype
+    recordHistory(res) {
+        const bot = this.botLabel(), opp = this.oppLabel(), key = bot + '|' + opp;
+        const e = this.hist[key] || (this.hist[key] = { bot, opp, tip: this.botTip() + '<br>vs: ' + this.oppTip(), w: 0, d: 0, l: 0, c: 0, qn: 0, t: 0 });
+        if (res === 'bot') e.w++; else if (res === 'player') e.l++; else e.d++;
+        e.c += this.game.qual.c; e.qn += this.game.qual.n; e.t = performance.now();
+        this.renderHist();
+    }
+    renderHist() {
+        const rows = Object.values(this.hist).sort((a, b) => b.t - a.t).slice(0, 8);
+        $('hist').innerHTML = rows.length
+            ? '<tr><th>Bot</th><th>Opponent</th><th>W/D/L</th><th>ACPL</th></tr>' + rows.map(e =>
+                `<tr><td data-tip="${esc(e.tip)}">${e.bot}</td><td>${e.opp}</td><td>${e.w}/${e.d}/${e.l}</td><td>${e.qn ? (e.c / e.qn).toFixed(0) : '–'}</td></tr>`).join('')
+            : '';
+    }
+
+    onSquare(sq) {
+        const g = this.game;
+        if (this.auto) return;
+        if (g.over) { g.reset(); return; }
+        if (g.pos.t !== -BOT) return;
+        if (g.sel >= 0 && g.targets.includes(sq)) {
+            this.pendingHuman = { f: g.sel, t: sq };
+        } else if (g.pos.b[sq] * -BOT > 0) {
+            g.sel = sq;
+            g.targets = g.legal().filter(m => m.f === sq).map(m => m.t);
+        } else { g.sel = -1; g.targets = []; }
+    }
+
+    step() {
+        const g = this.game;
+        let human = null;
+        if (g.pos.t === -BOT) {
+            human = this.auto ? this.oppFn(g.pos, this.matchNum) : this.pendingHuman;
+            this.pendingHuman = null;
+        }
+        let res = g.update(human);
+        if (this.auto && !res && g.ply >= 160) res = g.adjudicate();
+        if (res) {
+            if (res === 'player') this.scorePlayer++;
+            if (res === 'bot') this.scoreAlgo++;
+            this.matchNum++;
+            this.updateUI();
+            this.recordHistory(res);
+            if (this.auto) g.reset();   // in manual mode, game stays on screen until click
+        }
+    }
+
+    loop() {
+        if (!this.game.over) {
+            const steps = this.auto ? TIME_ACCELERATION : 1;
+            for (let i = 0; i < steps; i++) this.step();
+        }
+
+        this.frameCount++;
+        const now = performance.now();
+        if (now - this.lastFpsUpdate > 1000) {
+            this.fps = Math.round((this.frameCount * 1000) / (now - this.lastFpsUpdate));
+            document.getElementById("speed").innerText = this.fps;
+            this.frameCount = 0; this.lastFpsUpdate = now;
+        }
+
+        const bot = this.game.botAlgo;
+        document.getElementById("botMode").innerText = bot.mode;
+        document.getElementById("botMs").innerText = bot.calcMs.toFixed(3);
+        if (++this.frames % 6 === 0) {
+            document.getElementById("botLevel").innerText = Math.round(bot.acc * 100) + "%";
+            document.getElementById("levelBar").style.width = ((bot.acc - 0.5) * 200) + "%";
+            const total = bot.usage.reduce((a, b) => a + b, 0) || 1;
+            this.fillBars('usage', bot.usage.map(v => v / total), 1);
+            this.fillBars('lanes', bot.danger, 2);
+            const q = this.game.totalQ;
+            document.getElementById("qAcc").innerText = q.n ? (q.a / q.n).toFixed(1) + '%' : '-';
+            document.getElementById("qCpl").innerText = q.n ? (q.c / q.n).toFixed(1) : '-';
+            document.getElementById("qBl").innerText = q.n ? (q.b / q.n * 100).toFixed(1) + '%' : '-';
+            document.getElementById("qTop").innerText = q.n ? Math.round(q.t / q.n * 100) + '%' : '-';
+            document.getElementById("qN").innerText = q.n;
+            document.getElementById("misNow").innerText = bot.pm ? Math.round(bot.pm * 100) + '%' : 'none (growth model)';
+            document.getElementById("misAct").innerText = bot.lines ? (bot.miss / bot.lines * 100).toFixed(0) + '%' : '-';
+        }
+
+        this.game.draw();
+        requestAnimationFrame(() => this.loop());
+    }
+
+    updateUI() {
+        document.getElementById("matchNum").innerText = this.matchNum;
+        document.getElementById("playerGoals").innerText = this.scorePlayer;
+        document.getElementById("algoGoals").innerText = this.scoreAlgo;
+    }
+}
+
+new App();
+</script>
+
+</body>
+</html>
